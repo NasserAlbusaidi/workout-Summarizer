@@ -1,3 +1,10 @@
 streamlit
 pandas
 fitparse
+fitdecode
+fastapi
+uvicorn[standard]
+python-multipart
+slowapi
+pytest
+httpx

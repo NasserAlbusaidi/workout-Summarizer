@@ -364,60 +364,64 @@ def parse_plan_text(text: str) -> Tuple[List[Dict[str, Any]], int]:
 # =============================================================================
 
 def load_fit_file(uploaded_file) -> Tuple[Optional[pd.DataFrame], Optional[List[Dict]], Optional[Dict]]:
-    """Load and parse a FIT file."""
+    """Load and parse a FIT file using TRUE in-memory processing (no disk writes).
+    
+    Uses fitdecode which supports file-like objects (BytesIO).
+    This is the core of the Ephemeral Pipeline - zero disk trace.
+    """
     try:
+        import io
+        import fitdecode
+        
         fit_bytes = uploaded_file.read()
         uploaded_file.seek(0)
         
-        import tempfile
-        import os
+        # True in-memory processing with fitdecode
+        mem_file = io.BytesIO(fit_bytes)
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.fit') as tmp:
-            tmp.write(fit_bytes)
-            tmp_path = tmp.name
+        session_info = {}
+        records = []
+        laps = []
         
-        try:
-            fitfile = FitFile(tmp_path)
-            
-            session_info = {}
-            for session in fitfile.get_messages('session'):
-                for field in session:
-                    session_info[field.name] = field.value
-                break
-            
-            # Extract VO2 max from Activity Metrics (message type 140)
-            # Field unknown_29 contains VO2 max scaled by ~18724.7
-            for msg in fitfile.get_messages('unknown_140'):
-                for field in msg:
-                    if field.name == 'unknown_29' and field.value is not None:
-                        # Scale factor derived: raw_value / 18724.7 = VO2 max
-                        session_info['vo2_max'] = round(field.value / 18724.7, 2)
-                break
-
-            records = []
-            for record in fitfile.get_messages('record'):
-                record_data = {}
-                for field in record:
-                    record_data[field.name] = field.value
-                records.append(record_data)
-            
-            laps = []
-            for lap in fitfile.get_messages('lap'):
-                lap_data = {}
-                for field in lap:
-                    lap_data[field.name] = field.value
-                laps.append(lap_data)
-            
-            df = pd.DataFrame(records) if records else None
-            
-            return df, laps, session_info
-            
-        finally:
-            os.unlink(tmp_path)
+        with fitdecode.FitReader(mem_file) as fit:
+            for frame in fit:
+                if not isinstance(frame, fitdecode.FitDataMessage):
+                    continue
+                
+                # Session data
+                if frame.name == 'session':
+                    for field in frame.fields:
+                        session_info[field.name] = field.value
+                
+                # Record data (for time series)
+                elif frame.name == 'record':
+                    record_data = {}
+                    for field in frame.fields:
+                        record_data[field.name] = field.value
+                    records.append(record_data)
+                
+                # Lap data
+                elif frame.name == 'lap':
+                    lap_data = {}
+                    for field in frame.fields:
+                        lap_data[field.name] = field.value
+                    laps.append(lap_data)
+                
+                # VO2 max from unknown message type 140
+                elif frame.name == 'unknown_140':
+                    for field in frame.fields:
+                        if field.name == 'unknown_29' and field.value is not None:
+                            session_info['vo2_max'] = round(field.value / 18724.7, 2)
+        
+        df = pd.DataFrame(records) if records else None
+        
+        return df, laps, session_info
     
     except Exception as e:
         st.error(f"Error parsing FIT file: {str(e)}")
         return None, None, None
+
+
 
 
 def process_fit_laps(laps: List[Dict], sport: str = 'running', min_duration: int = 5) -> List[Dict[str, Any]]:
