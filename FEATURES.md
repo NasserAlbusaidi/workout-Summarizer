@@ -9,7 +9,8 @@
 
 ### Workout Analysis
 - **FIT File Parsing** - Upload FIT files from Garmin, Wahoo, or any ANT+ device
-- **Plan Matching** - Compare actual performance against planned intervals
+- **FORM Goggles CSV** - Upload swim data exports from FORM smart goggles
+- **Plan Matching** - Compare actual performance against planned intervals (optional)
 - **Multi-Sport Support** - Running, Cycling, and Swimming workouts
 - **In-Memory Processing** - Zero data stored on server (ephemeral architecture)
 

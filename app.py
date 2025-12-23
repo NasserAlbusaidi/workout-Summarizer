@@ -529,6 +529,240 @@ def process_fit_laps(laps: List[Dict], sport: str = 'running', min_duration: int
     return processed_laps
 
 
+# =============================================================================
+# FORM GOGGLES CSV PARSER
+# =============================================================================
+
+def parse_form_time(time_str: str) -> float:
+    """Parse FORM time format (M:SS.xx or H:MM:SS.xx) to seconds."""
+    if not time_str or time_str == '0:00.00':
+        return 0.0
+    try:
+        parts = time_str.split(':')
+        if len(parts) == 2:
+            mins, secs = parts
+            return float(mins) * 60 + float(secs)
+        elif len(parts) == 3:
+            hours, mins, secs = parts
+            return float(hours) * 3600 + float(mins) * 60 + float(secs)
+        return 0.0
+    except:
+        return 0.0
+
+
+def parse_form_pace(pace_str: str) -> str:
+    """Parse FORM pace format (M:SS.xx) to standard format (M:SS)."""
+    if not pace_str or pace_str == '0:00.00':
+        return '--:--'
+    try:
+        parts = pace_str.split(':')
+        if len(parts) == 2:
+            mins = int(parts[0])
+            secs = int(float(parts[1]))
+            return f"{mins}:{secs:02d}"
+        return pace_str
+    except:
+        return '--:--'
+
+
+def load_form_csv(uploaded_file) -> Tuple[Optional[List[Dict]], Optional[Dict]]:
+    """Load and parse a FORM goggles CSV file.
+    
+    Returns:
+        - List of length/lap data
+        - Session info dictionary
+    """
+    try:
+        import csv
+        import io
+        
+        # Read file content
+        content = uploaded_file.read()
+        if isinstance(content, bytes):
+            content = content.decode('utf-8')
+        uploaded_file.seek(0)
+        
+        lines = content.strip().split('\n')
+        
+        # Parse header section (first 2 rows)
+        session_info = {}
+        if len(lines) >= 2:
+            header_keys = lines[0].split(',')
+            header_values = lines[1].split(',')
+            
+            for key, value in zip(header_keys, header_values):
+                key = key.strip()
+                value = value.strip()
+                if key and value:
+                    session_info[key] = value
+            
+            # Extract common session fields
+            session_info['sport'] = 'swimming'
+            session_info['activity_name'] = session_info.get('Swim Title') or 'FORM Swim'
+            session_info['pool_length'] = int(session_info.get('Pool Size', 25))
+            session_info['start_time'] = f"{session_info.get('Swim Date', '')} {session_info.get('Swim Start Time', '')}"
+        
+        # Parse data section (row 4 onwards, row 3 is header)
+        lengths = []
+        if len(lines) >= 5:
+            # Row 4 (index 3) is the data header
+            data_header = lines[3].split(',')
+            
+            # Get column indices
+            col_map = {}
+            for i, col in enumerate(data_header):
+                col_map[col.strip()] = i
+            
+            # Parse each data row
+            for row_idx in range(4, len(lines)):
+                row = lines[row_idx].strip()
+                if not row:
+                    continue
+                
+                values = row.split(',')
+                if len(values) < len(data_header):
+                    continue
+                
+                def get_val(col_name, default=''):
+                    idx = col_map.get(col_name)
+                    if idx is not None and idx < len(values):
+                        return values[idx].strip()
+                    return default
+                
+                # Parse the length data
+                stroke = get_val('Strk', 'REST')
+                is_rest = stroke == 'REST' or get_val('Length (m)', '0') == '0'
+                
+                length_data = {
+                    'set_number': int(get_val('Set #', '0') or 0),
+                    'set_description': get_val('Set', ''),
+                    'interval_m': int(get_val('Interval (m)', '0') or 0),
+                    'distance_m': int(get_val('Length (m)', '0') or 0),
+                    'stroke_type': stroke,
+                    'move_time': parse_form_time(get_val('Move Time', '0:00.00')),
+                    'rest_time': parse_form_time(get_val('Rest Time', '0:00.00')),
+                    'cumul_time': parse_form_time(get_val('Cumul Time', '0:00.00')),
+                    'cumul_dist': int(get_val('Cumul Dist (m)', '0') or 0),
+                    'dps': float(get_val('Avg DPS', '0') or 0),
+                    'avg_hr': int(get_val('Avg BPM (moving)', '0') or 0) or None,
+                    'max_hr': int(get_val('Max BPM', '0') or 0) or None,
+                    'min_hr_rest': int(get_val('Min BPM (resting)', '0') or 0) or None,
+                    'pace_100': parse_form_pace(get_val('Pace/100', '0:00.00')),
+                    'pace_50': parse_form_pace(get_val('Pace/50', '0:00.00')),
+                    'swolf': int(get_val('SWOLF', '0') or 0),
+                    'stroke_rate': int(get_val('Avg Strk Rate (strk/min)', '0') or 0),
+                    'stroke_count': int(get_val('Strk Count', '0') or 0),
+                    'calories': int(get_val('Calories', '0') or 0),
+                    'is_rest': is_rest,
+                }
+                
+                lengths.append(length_data)
+        
+        return lengths, session_info
+    
+    except Exception as e:
+        st.error(f"Error parsing FORM CSV: {str(e)}")
+        return None, None
+
+
+def process_form_lengths(lengths: List[Dict], session_info: Dict) -> List[Dict[str, Any]]:
+    """Convert FORM length data to our standard lap format.
+    
+    Groups consecutive lengths with the same set description into combined laps.
+    """
+    if not lengths:
+        return []
+    
+    processed_laps = []
+    pool_length = session_info.get('pool_length', 25)
+    
+    # Group lengths by set
+    current_set = None
+    current_laps = []
+    
+    for length in lengths:
+        set_desc = length['set_description']
+        
+        if set_desc != current_set and current_laps:
+            # Combine previous set's laps
+            combined = _combine_form_lengths(current_laps, pool_length)
+            if combined:
+                processed_laps.append(combined)
+            current_laps = []
+        
+        current_set = set_desc
+        current_laps.append(length)
+    
+    # Don't forget last set
+    if current_laps:
+        combined = _combine_form_lengths(current_laps, pool_length)
+        if combined:
+            processed_laps.append(combined)
+    
+    return processed_laps
+
+
+def _combine_form_lengths(lengths: List[Dict], pool_length: int) -> Optional[Dict]:
+    """Combine multiple lengths into a single lap/interval."""
+    if not lengths:
+        return None
+    
+    # Filter out pure rest entries for calculations
+    active_lengths = [l for l in lengths if not l['is_rest']]
+    
+    total_distance = sum(l['distance_m'] for l in lengths)
+    total_move_time = sum(l['move_time'] for l in lengths)
+    total_rest_time = sum(l['rest_time'] for l in lengths)
+    total_time = total_move_time + total_rest_time
+    
+    # Averages from active lengths only
+    hr_values = [l['avg_hr'] for l in active_lengths if l['avg_hr']]
+    max_hr_values = [l['max_hr'] for l in active_lengths if l['max_hr']]
+    swolf_values = [l['swolf'] for l in active_lengths if l['swolf']]
+    dps_values = [l['dps'] for l in active_lengths if l['dps']]
+    stroke_rate_values = [l['stroke_rate'] for l in active_lengths if l['stroke_rate']]
+    
+    avg_hr = int(sum(hr_values) / len(hr_values)) if hr_values else None
+    max_hr = max(max_hr_values) if max_hr_values else None
+    avg_swolf = int(sum(swolf_values) / len(swolf_values)) if swolf_values else None
+    avg_dps = round(sum(dps_values) / len(dps_values), 2) if dps_values else None
+    avg_stroke_rate = int(sum(stroke_rate_values) / len(stroke_rate_values)) if stroke_rate_values else None
+    
+    total_strokes = sum(l['stroke_count'] for l in active_lengths)
+    total_calories = sum(l['calories'] for l in lengths)
+    
+    # Calculate pace
+    avg_speed = total_distance / total_move_time if total_move_time > 0 else 0
+    swim_pace = format_swim_pace(avg_speed)
+    
+    # Get set info from first length
+    first = lengths[0]
+    
+    return {
+        'lap_number': first['set_number'],
+        'set_description': first['set_description'],
+        'duration_seconds': total_time,
+        'move_time': total_move_time,
+        'rest_time': total_rest_time,
+        'distance_m': total_distance,
+        'avg_speed_ms': avg_speed,
+        'avg_pace': None,
+        'swim_pace': swim_pace,
+        'avg_hr': avg_hr,
+        'max_hr': max_hr,
+        'swolf': avg_swolf,
+        'dps': avg_dps,
+        'stroke_rate': avg_stroke_rate,
+        'total_strokes': total_strokes,
+        'swim_stroke': first.get('stroke_type', 'FR'),
+        'num_lengths': len(active_lengths),
+        'calories': total_calories,
+        'is_rest': total_distance == 0,
+        'source': 'FORM',
+    }
+
+
+
 def extract_session_info(session: Dict) -> Dict[str, Any]:
     """Extract relevant session-level information."""
     activity_name = session.get('unknown_110') or session.get('sport', 'Activity')
@@ -1053,54 +1287,175 @@ Cool Down 5m 80-89% Pace"""
                 st.success(f"✅ Parsed {len(planned_blocks)} intervals")
     
     with col2:
-        st.subheader("📁 FIT File")
+        st.subheader("📁 Workout File")
         
-        uploaded_file = st.file_uploader("Upload your FIT file:", type=['fit'])
+        uploaded_file = st.file_uploader(
+            "Upload your workout file:", 
+            type=['fit', 'csv'],
+            help="Supports Garmin/Wahoo FIT files and FORM goggles CSV exports"
+        )
         
         if uploaded_file:
-            with st.spinner("Parsing FIT file..."):
-                df, raw_laps, session_info = load_fit_file(uploaded_file)
-                st.write('raw_laps', raw_laps)
+            file_name = uploaded_file.name.lower()
             
-            if raw_laps and session_info:
-                session_data = extract_session_info(session_info)
-                sport = session_data['sport']
-                laps = process_fit_laps(raw_laps, sport=sport, min_duration=3)
-                st.session_state['actual_laps'] = laps
-                st.session_state['session_info'] = session_data
+            if file_name.endswith('.csv'):
+                # FORM goggles CSV
+                with st.spinner("Parsing FORM CSV file..."):
+                    raw_lengths, session_info = load_form_csv(uploaded_file)
                 
-                emoji = "🏊" if sport == 'swimming' else ("🚴" if sport == 'cycling' else "🏃")
-                st.success(f"✅ {emoji} **{session_data['activity_name']}** — {len(laps)} laps")
+                if raw_lengths and session_info:
+                    laps = process_form_lengths(raw_lengths, session_info)
+                    st.session_state['actual_laps'] = laps
+                    st.session_state['session_info'] = session_info
+                    st.session_state['file_type'] = 'FORM'
+                    
+                    pool_size = session_info.get('pool_length', 25)
+                    st.success(f"✅ 🏊 **FORM Swim** — {len(laps)} sets, {pool_size}m pool")
+                    
+            else:
+                # FIT file
+                with st.spinner("Parsing FIT file..."):
+                    df, raw_laps, session_info = load_fit_file(uploaded_file)
+                
+                if raw_laps and session_info:
+                    session_data = extract_session_info(session_info)
+                    sport = session_data['sport']
+                    laps = process_fit_laps(raw_laps, sport=sport, min_duration=3)
+                    st.session_state['actual_laps'] = laps
+                    st.session_state['session_info'] = session_data
+                    st.session_state['file_type'] = 'FIT'
+                    
+                    emoji = "🏊" if sport == 'swimming' else ("🚴" if sport == 'cycling' else "🏃")
+                    st.success(f"✅ {emoji} **{session_data['activity_name']}** — {len(laps)} laps")
     
     st.markdown("---")
     
     if st.button("🔄 Generate Report", type="primary"):
-        if 'planned_blocks' not in st.session_state or not st.session_state['planned_blocks']:
-            st.error("Parse your workout plan first!")
-        elif 'actual_laps' not in st.session_state:
+        if 'actual_laps' not in st.session_state:
             st.error("Upload a FIT file first!")
         else:
             session_data = st.session_state.get('session_info', {})
             sport = session_data.get('sport', 'running')
+            processed_laps = st.session_state['actual_laps']
             
-            grouped = group_laps_by_planned(
-                st.session_state['planned_blocks'],
-                st.session_state['actual_laps'],
-                sport=sport
-            )
+            # Check if plan was provided
+            has_plan = 'planned_blocks' in st.session_state and st.session_state['planned_blocks']
             
-            summary = calculate_overall_summary(
-                st.session_state['actual_laps'],
-                session_data
-            )
-            
-            output = generate_detailed_output(
-                st.session_state['planned_blocks'],
-                st.session_state.get('num_rounds', 0),
-                grouped,
-                summary,
-                session_data
-            )
+            if has_plan:
+                # Compare against planned workout
+                grouped = group_laps_by_planned(
+                    st.session_state['planned_blocks'],
+                    processed_laps,
+                    sport=sport
+                )
+                
+                summary = calculate_overall_summary(processed_laps, session_data)
+                
+                output = generate_detailed_output(
+                    st.session_state['planned_blocks'],
+                    st.session_state.get('num_rounds', 0),
+                    grouped,
+                    summary,
+                    session_data
+                )
+            else:
+                # No plan - generate simple lap report
+                st.info("ℹ️ No workout plan provided. Generating lap-by-lap summary.")
+                
+                summary = calculate_overall_summary(processed_laps, session_data)
+                
+                # Build simple report
+                emoji = "🏊" if sport == 'swimming' else ("🚴" if sport == 'cycling' else "🏃")
+                activity_name = session_data.get('activity_name', 'Activity')
+                
+                lines = []
+                lines.append(f"# {emoji} {sport.upper()}: {activity_name}")
+                lines.append("")
+                
+                start_time = session_data.get('start_time')
+                if start_time:
+                    lines.append(f"**Date:** {start_time}")
+                lines.append("")
+                
+                # Summary table
+                lines.append("## 📊 Summary")
+                lines.append("| Metric | Value |")
+                lines.append("|--------|-------|")
+                lines.append(f"| **Duration** | {summary.get('total_duration', '—')} |")
+                lines.append(f"| **Distance** | {summary.get('total_distance', '—')} |")
+                if summary.get('avg_hr'):
+                    lines.append(f"| **Avg HR** | {summary['avg_hr']} bpm |")
+                if summary.get('max_hr'):
+                    lines.append(f"| **Max HR** | {summary['max_hr']} bpm |")
+                if summary.get('avg_power'):
+                    lines.append(f"| **Avg Power** | {summary['avg_power']} W |")
+                if summary.get('calories'):
+                    lines.append(f"| **Calories** | {summary['calories']} kcal |")
+                lines.append("")
+                
+                # Laps - use inline format like default workout reports
+                lines.append("## 🔄 Sets")
+                lines.append("")
+                
+                for i, lap in enumerate(processed_laps, 1):
+                    dur_sec = lap.get('duration_seconds', 0)
+                    mins, secs = divmod(int(dur_sec), 60)
+                    duration = f"{mins}:{secs:02d}"
+                    
+                    dist_m = lap.get('distance_m', 0)
+                    if dist_m >= 1000:
+                        distance = f"{dist_m/1000:.2f}km"
+                    else:
+                        distance = f"{int(dist_m)}m"
+                    
+                    # Build inline format like format_combined_lap
+                    parts = []
+                    
+                    if sport == 'swimming':
+                        set_desc = lap.get('set_description') or f"Set {i}"
+                        pace = lap.get('swim_pace') or '--:--'
+                        parts.append(f"**{distance}** in {duration}")
+                        parts.append(f"Pace {pace}/100m")
+                        
+                        # HR
+                        if lap.get('avg_hr'):
+                            parts.append(f"HR {lap['avg_hr']} avg")
+                        
+                        # SWOLF
+                        if lap.get('swolf'):
+                            parts.append(f"SWOLF {lap['swolf']}")
+                        
+                        # Strokes
+                        if lap.get('total_strokes'):
+                            parts.append(f"Strokes {lap['total_strokes']}")
+                        
+                        # DPS
+                        if lap.get('dps'):
+                            parts.append(f"DPS {lap['dps']:.2f}")
+                        
+                        # Stroke type
+                        if lap.get('swim_stroke') and lap['swim_stroke'] != 'REST':
+                            stroke_name = {'FR': 'Free', 'BR': 'Breast', 'BA': 'Back', 'FL': 'Fly'}.get(lap['swim_stroke'], lap['swim_stroke'])
+                            parts.append(f"({stroke_name})")
+                        
+                        lines.append(f"**{set_desc}:** " + " | ".join(parts) + "  ")
+                    else:
+                        # Non-swimming format
+                        hr = lap.get('avg_hr') or '—'
+                        pace = lap.get('avg_pace') or '--:--'
+                        parts.append(f"**{duration}** — {pace}/km")
+                        if lap.get('avg_hr'):
+                            parts.append(f"HR {lap['avg_hr']}")
+                        if lap.get('cadence'):
+                            parts.append(f"Cad {lap['cadence']} spm")
+                        lines.append(f"**Lap {i}:** " + " | ".join(parts) + "  ")
+                    
+                    lines.append("")
+                
+                lines.append("---")
+                lines.append("*Report generated without a workout plan.*")
+                
+                output = "\n".join(lines)
             
             st.markdown(output)
             st.download_button("📥 Download Report", output, "workout_report.md", "text/markdown")
@@ -1108,3 +1463,4 @@ Cool Down 5m 80-89% Pace"""
 
 if __name__ == "__main__":
     main()
+

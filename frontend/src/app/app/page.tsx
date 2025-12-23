@@ -171,7 +171,10 @@ Cool Down 5m 80-89% Pace`);
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("plan", plan);
+      // Only send plan if user entered something
+      if (plan.trim()) {
+        formData.append("plan", plan);
+      }
 
       const response = await fetch(`${API_URL}/analyze`, {
         method: "POST",
@@ -276,24 +279,30 @@ Cool Down 5m 80-89% Pace`);
           <div className="space-y-6">
             <div>
               <label className="block text-sm font-medium text-zinc-400 mb-2">
-                📝 Workout Plan (intervals.icu format)
+                📝 Workout Plan (Optional)
+                <span className="block text-xs text-zinc-500 font-normal mt-1">
+                  Paste intervals.icu plan to compare, or leave empty for lap-only analysis
+                </span>
               </label>
               <textarea
                 value={plan}
                 onChange={(e) => setPlan(e.target.value)}
                 className="w-full h-48 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 font-mono text-sm text-cyan-300 focus:border-cyan-500 focus:outline-none resize-none"
-                placeholder="Paste your workout plan..."
+                placeholder="Paste your workout plan... (optional)"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-zinc-400 mb-2">
-                📁 FIT File
+                📁 Workout File
+                <span className="block text-xs text-zinc-500 font-normal mt-1">
+                  Supports FIT files and FORM goggles CSV exports
+                </span>
               </label>
               <div className="relative">
                 <input
                   type="file"
-                  accept=".fit"
+                  accept=".fit,.csv"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                   className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-cyan-500 file:text-black hover:file:bg-cyan-400 cursor-pointer"
                 />

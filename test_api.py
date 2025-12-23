@@ -102,15 +102,17 @@ class TestAnalyzeEndpoint:
         response = client.post("/analyze", data={"plan": "test plan"})
         assert response.status_code == 422
     
-    def test_missing_plan_returns_422(self):
-        """Missing plan should return 422."""
-        # Create a minimal fake FIT file
+    def test_missing_plan_is_allowed(self):
+        """Missing plan should NOT return 422 (plan is optional)."""
+        # Request without plan should proceed to FIT parsing (may fail on invalid FIT)
         fake_fit = io.BytesIO(b"fake fit data")
         response = client.post(
             "/analyze",
             files={"file": ("test.fit", fake_fit, "application/octet-stream")}
         )
-        assert response.status_code == 422
+        # Should NOT be 422 (validation error for missing required field)
+        # Will likely be 400 (FIT parse error) or 200 (if valid FIT)
+        assert response.status_code != 422
 
 
 class TestRateLimiting:
