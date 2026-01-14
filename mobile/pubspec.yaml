@@ -1,0 +1,60 @@
+name: workout_analyzer
+description: "Offline workout analyzer for FIT files and FORM goggles CSV exports"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # UI
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  
+  # File handling
+  file_picker: ^8.1.6
+  path_provider: ^2.1.5
+  
+  # FIT file parsing
+  fit_tool: ^1.0.5
+  
+  # Local storage (simple JSON file approach - no code gen needed)
+  shared_preferences: ^2.3.5
+  
+  # Secure storage for API keys
+  flutter_secure_storage: ^9.2.4
+  
+  # HTTP client
+  http: ^1.2.2
+  
+  # State management
+  flutter_riverpod: ^2.6.1
+  
+  # Utilities
+  intl: ^0.20.2
+  share_plus: ^10.1.4
+  flutter_markdown: ^0.7.6
+  url_launcher: ^6.3.1
+  
+  # Charts
+  fl_chart: ^0.69.0
+  
+  # Maps (v5 compatible with fit_tool's logger version)
+  flutter_map: ^5.0.0
+  latlong2: ^0.9.1
+  
+  # PDF Export
+  pdf: ^3.11.1
+  printing: ^5.13.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
